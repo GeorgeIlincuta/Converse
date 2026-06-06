@@ -385,8 +385,12 @@ MigrationBackup/
 FodyWeavers.xsd
 
 # User-supplied model weights (not tracked)
-/models/
-!/models/.gitkeep
+/models/**
+!/models/
+!/models/whisper/
+!/models/whisper/.gitkeep
+!/models/supertonic/
+!/models/supertonic/.gitkeep
 
 # VS Code files for those working on multiple tools
 .vscode/*

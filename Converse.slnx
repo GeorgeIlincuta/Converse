@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="Converse.Api.Tests/Converse.Api.Tests.csproj" />
+  <Project Path="Converse.Api/Converse.Api.csproj" />
+</Solution>

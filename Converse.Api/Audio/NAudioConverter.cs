@@ -7,46 +7,49 @@ public sealed class NAudioConverter : IAudioConverter
 {
     public float[] ToWhisperPcm(Stream audio)
     {
-        var buffer = new MemoryStream();
+        using var buffer = new MemoryStream();
         audio.CopyTo(buffer);
         buffer.Position = 0;
 
-        IWaveProvider waveProvider;
+        WaveStream waveStream;
         try
         {
-            waveProvider = new WaveFileReader(buffer);
+            waveStream = new WaveFileReader(buffer);
         }
-        catch
+        catch (Exception ex) when (ex is FormatException or InvalidOperationException or ArgumentException)
         {
             buffer.Position = 0;
             try
             {
-                waveProvider = new StreamMediaFoundationReader(buffer);
+                waveStream = new StreamMediaFoundationReader(buffer);
             }
-            catch (Exception ex)
+            catch (Exception mfEx)
             {
                 throw new InvalidOperationException(
-                    "Could not decode audio: no supported decoder for the input format.", ex);
+                    "Could not decode audio: no supported decoder for the input format.", mfEx);
             }
         }
 
-        ISampleProvider samples = waveProvider.ToSampleProvider();
-
-        if (waveProvider.WaveFormat.Channels > 1)
-            samples = new StereoToMonoSampleProvider(samples);
-
-        if (waveProvider.WaveFormat.SampleRate != 16000)
-            samples = new WdlResamplingSampleProvider(samples, 16000);
-
-        var result = new List<float>();
-        var chunk = new float[4096];
-        int read;
-        while ((read = samples.Read(chunk, 0, chunk.Length)) > 0)
+        using (waveStream)
         {
-            for (int i = 0; i < read; i++)
-                result.Add(chunk[i]);
+            ISampleProvider samples = waveStream.ToSampleProvider();
+
+            if (waveStream.WaveFormat.Channels > 1)
+                samples = new StereoToMonoSampleProvider(samples);
+
+            if (waveStream.WaveFormat.SampleRate != 16000)
+                samples = new WdlResamplingSampleProvider(samples, 16000);
+
+            var result = new List<float>();
+            var chunk = new float[4096];
+            int read;
+            while ((read = samples.Read(chunk, 0, chunk.Length)) > 0)
+            {
+                for (int i = 0; i < read; i++)
+                    result.Add(chunk[i]);
+            }
+            return result.ToArray();
         }
-        return result.ToArray();
     }
 
     public byte[] PcmToWav(float[] samples, int sampleRate)

@@ -32,6 +32,10 @@ public sealed class OpenAICompatibleLlmService : ILlmService
         string? systemPrompt,
         CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(_opts.BaseUrl))
+            throw new InvalidOperationException(
+                "OpenAI-compatible LLM is not configured: Llm:OpenAICompatible:BaseUrl is empty.");
+
         var chatMessages = new List<OaiMessage>();
 
         if (!string.IsNullOrWhiteSpace(systemPrompt))

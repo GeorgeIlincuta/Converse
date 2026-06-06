@@ -41,7 +41,7 @@ public class GeminiLlmServiceTests
 
         await svc.CompleteAsync(new[] { new ChatMessage(Role.User, "hello") }, null, CancellationToken.None);
 
-        handler.CapturedRequest!.RequestUri!.ToString()
+        handler.CapturedRequestUri!.ToString()
             .Should().EndWith("/models/gemini-2.5-flash:generateContent?key=test-key");
     }
 

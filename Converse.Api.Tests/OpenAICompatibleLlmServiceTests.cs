@@ -50,7 +50,7 @@ public class OpenAICompatibleLlmServiceTests
 
         await svc.CompleteAsync(new[] { new ChatMessage(Role.User, "hello") }, null, CancellationToken.None);
 
-        handler.CapturedRequest!.RequestUri!.ToString()
+        handler.CapturedRequestUri!.ToString()
             .Should().Be("http://localhost:1234/v1/chat/completions");
     }
 
@@ -62,7 +62,7 @@ public class OpenAICompatibleLlmServiceTests
 
         await svc.CompleteAsync(new[] { new ChatMessage(Role.User, "hello") }, null, CancellationToken.None);
 
-        handler.CapturedRequest!.RequestUri!.ToString()
+        handler.CapturedRequestUri!.ToString()
             .Should().Be("http://localhost:1234/v1/chat/completions");
     }
 
@@ -74,8 +74,8 @@ public class OpenAICompatibleLlmServiceTests
 
         await svc.CompleteAsync(new[] { new ChatMessage(Role.User, "hello") }, null, CancellationToken.None);
 
-        handler.CapturedRequest!.Headers.Authorization!.Scheme.Should().Be("Bearer");
-        handler.CapturedRequest!.Headers.Authorization!.Parameter.Should().Be("sk-abc");
+        handler.CapturedAuthorizationHeader!.Scheme.Should().Be("Bearer");
+        handler.CapturedAuthorizationHeader!.Parameter.Should().Be("sk-abc");
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public class OpenAICompatibleLlmServiceTests
 
         await svc.CompleteAsync(new[] { new ChatMessage(Role.User, "hello") }, null, CancellationToken.None);
 
-        handler.CapturedRequest!.Headers.Authorization.Should().BeNull();
+        handler.CapturedAuthorizationHeader.Should().BeNull();
     }
 
     [Fact]
@@ -184,5 +184,18 @@ public class OpenAICompatibleLlmServiceTests
             new[] { new ChatMessage(Role.User, "hi") }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
+    public async Task CompleteAsync_throws_when_BaseUrl_is_empty()
+    {
+        var handler = OkHandler();
+        var svc = BuildService(handler, baseUrl: "");
+
+        var act = () => svc.CompleteAsync(
+            new[] { new ChatMessage(Role.User, "hi") }, null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Llm:OpenAICompatible:BaseUrl*");
     }
 }

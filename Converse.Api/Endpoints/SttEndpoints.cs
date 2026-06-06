@@ -14,6 +14,9 @@ internal static class SttEndpoints
             ISpeechToTextService stt,
             CancellationToken ct) =>
         {
+            if (!stt.IsReady)
+                return Results.Problem("Whisper STT is not ready; check model path configuration.", statusCode: 503);
+
             await using var stream = audio.OpenReadStream();
             var pcm = converter.ToWhisperPcm(stream);
             var text = await stt.TranscribeAsync(pcm, ct);

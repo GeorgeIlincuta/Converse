@@ -34,8 +34,14 @@ public sealed class NAudioConverter : IAudioConverter
         {
             ISampleProvider samples = waveStream.ToSampleProvider();
 
-            if (waveStream.WaveFormat.Channels > 1)
-                samples = new StereoToMonoSampleProvider(samples);
+            switch (waveStream.WaveFormat.Channels)
+            {
+                case 1: break;
+                case 2: samples = new StereoToMonoSampleProvider(samples); break;
+                default:
+                    throw new InvalidOperationException(
+                        $"Unsupported channel count {waveStream.WaveFormat.Channels}; only mono and stereo input are supported.");
+            }
 
             if (waveStream.WaveFormat.SampleRate != 16000)
                 samples = new WdlResamplingSampleProvider(samples, 16000);

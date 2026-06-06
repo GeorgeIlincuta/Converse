@@ -13,6 +13,9 @@ internal static class TtsEndpoints
             IAudioConverter audio,
             CancellationToken ct) =>
         {
+            if (!tts.IsReady)
+                return Results.Problem("Supertonic TTS is not ready; check model path configuration.", statusCode: 503);
+
             var samples = await tts.SynthesizeAsync(req.Text, ct);
             var bytes = audio.PcmToWav(samples, tts.SampleRate);
             return Results.File(bytes, "audio/wav");

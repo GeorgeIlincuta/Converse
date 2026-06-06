@@ -1,5 +1,7 @@
 using Converse.Api.Configuration;
 using Converse.Api.Conversation;
+using Converse.Api.Stt;
+using Converse.Api.Tts;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Options;
 
@@ -26,9 +28,16 @@ internal static class ConversationEndpoints
             Guid id,
             [FromForm] IFormFile audio,
             ConversationOrchestrator orchestrator,
+            ISpeechToTextService stt,
+            ITextToSpeechService tts,
             HttpContext httpContext,
             CancellationToken ct) =>
         {
+            if (!stt.IsReady)
+                return Results.Problem("Whisper STT is not ready; check model path configuration.", statusCode: 503);
+            if (!tts.IsReady)
+                return Results.Problem("Supertonic TTS is not ready; check model path configuration.", statusCode: 503);
+
             ConversationTurnResult result;
             try
             {

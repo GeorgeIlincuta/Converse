@@ -21,6 +21,8 @@ public sealed class ConversationOrchestrator(
     IServiceProvider sp,
     ILogger<ConversationOrchestrator> logger)
 {
+    // On TTS failure (e.g., model not yet loaded), the session keeps the appended Assistant turn.
+    // Acceptable for v1: the next turn sees the un-synthesised reply in its history. Revisit if real audio playback errors surface.
     public async Task<ConversationTurnResult> RunTurnAsync(
         Guid sessionId,
         Stream audioStream,

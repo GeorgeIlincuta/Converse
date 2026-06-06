@@ -5,6 +5,7 @@ using Converse.Api.Endpoints;
 using Converse.Api.Llm;
 using Converse.Api.Stt;
 using Converse.Api.Tts;
+using Microsoft.AspNetCore.Http.Features;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -28,11 +29,10 @@ builder.Services.AddHttpClient<OpenAICompatibleLlmService>();
 builder.Services.AddKeyedScoped<ILlmService>("gemini", (sp, _) => sp.GetRequiredService<GeminiLlmService>());
 builder.Services.AddKeyedScoped<ILlmService>("openai-compatible", (sp, _) => sp.GetRequiredService<OpenAICompatibleLlmService>());
 
-// Kestrel — raise body size limit for audio uploads
-builder.WebHost.ConfigureKestrel(k =>
-{
-    k.Limits.MaxRequestBodySize = 50 * 1024 * 1024; // 50 MB
-});
+// Kestrel — raise body size limit for audio uploads (multipart form limit must match)
+const long MaxAudioBytes = 50 * 1024 * 1024; // 50 MB
+builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = MaxAudioBytes);
+builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = MaxAudioBytes);
 
 var app = builder.Build();
 

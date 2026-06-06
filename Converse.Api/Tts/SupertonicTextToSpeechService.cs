@@ -64,7 +64,7 @@ public sealed class SupertonicTextToSpeechService : ITextToSpeechService, IDispo
 
     public Task<float[]> SynthesizeAsync(string text, CancellationToken ct)
     {
-        if (!IsReady)
+        if (!IsReady || _session is null)
             throw new InvalidOperationException(
                 "Supertonic TTS service is not ready; check model path configuration.");
 

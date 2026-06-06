@@ -50,7 +50,7 @@ public sealed class WhisperSpeechToTextService : ISpeechToTextService, IDisposab
             .Build();
 
         var segments = new List<string>();
-        await foreach (var segment in processor.ProcessAsync(pcm, ct))
+        await foreach (var segment in processor.ProcessAsync(pcm, ct).WithCancellation(ct))
         {
             segments.Add(segment.Text);
         }

@@ -33,7 +33,7 @@ builder.Services.AddHttpClient("llm-health", (sp, c) =>
     var opts = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
     if (!string.IsNullOrWhiteSpace(opts.LmStudio.BaseUrl))
         c.BaseAddress = new Uri(opts.LmStudio.BaseUrl.TrimEnd('/') + "/");
-    c.Timeout = TimeSpan.FromSeconds(2);
+    c.Timeout = TimeSpan.FromSeconds(5);
 });
 
 // Kestrel — raise body size limit for audio uploads (multipart form limit must match)

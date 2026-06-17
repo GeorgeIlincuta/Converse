@@ -21,6 +21,7 @@ builder.Services.AddSingleton<IAudioConverter, NAudioConverter>();
 builder.Services.AddSingleton<ISpeechToTextService, WhisperSpeechToTextService>();
 builder.Services.AddSingleton<SupertonicPipeline>();
 builder.Services.AddSingleton<ITextToSpeechService, SupertonicTextToSpeechService>();
+builder.Services.AddHostedService<TtsWarmupService>();
 builder.Services.AddScoped<ConversationOrchestrator>();
 
 // LLM — v1 ships LM Studio only. Future providers go through ILlmService + a factory.

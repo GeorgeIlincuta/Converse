@@ -30,6 +30,9 @@ public sealed class SupertonicPipeline : IDisposable
     public UnicodeIndexer? Indexer { get; }
     public bool IsReady { get; }
 
+    /// <summary>Convenience accessor; 0 if the pipeline did not load successfully.</summary>
+    public int SampleRate => Config?.SampleRate ?? 0;
+
     public SupertonicPipeline(IOptions<SupertonicOptions> options, ILogger<SupertonicPipeline> logger)
     {
         _opts = options.Value;

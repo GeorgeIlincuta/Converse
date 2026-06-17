@@ -27,23 +27,8 @@ public sealed class UnicodeIndexer
         return new UnicodeIndexer(table);
     }
 
-    // Maps a string to token ids by iterating Unicode scalar values and looking up
-    // the per-codepoint index in the table. Codepoints with value -1 (or out of range)
-    // are dropped — they're unsupported characters.
-    public int[] Encode(string text)
-    {
-        if (string.IsNullOrEmpty(text)) return Array.Empty<int>();
-
-        var tokens = new List<int>(text.Length);
-        foreach (var rune in text.EnumerateRunes())
-        {
-            var cp = rune.Value;
-            if (cp >= 0 && cp < _table.Length)
-            {
-                var id = _table[cp];
-                if (id >= 0) tokens.Add(id);
-            }
-        }
-        return tokens.ToArray();
-    }
+    // Maps a single UTF-16 code unit (cast to int) to its token id, matching the
+    // reference: in-range codepoints return the table value, everything else returns 0.
+    public long MapChar(int charValue)
+        => charValue >= 0 && charValue < _table.Length ? _table[charValue] : 0L;
 }

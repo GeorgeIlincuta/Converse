@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Converse.Api.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -129,6 +130,7 @@ public sealed class SupertonicPipeline : IDisposable
         var styleDp = new DenseTensor<float>(voice.Dp, voice.DpShape.Select(x => (int)x).ToArray());
 
         // 1) Duration predictor -> one total-duration value per utterance.
+        var swDp = Stopwatch.StartNew();
         float[] duration;
         using (var dpOut = _durationPredictor!.Run(new[]
         {
@@ -141,8 +143,10 @@ public sealed class SupertonicPipeline : IDisposable
         }
         for (int i = 0; i < duration.Length; i++)
             duration[i] /= _opts.Speed;
+        swDp.Stop();
 
         // 2) Text encoder -> text_emb (copied out so we can dispose the run results).
+        var swTe = Stopwatch.StartNew();
         DenseTensor<float> textEmb;
         using (var teOut = _textEncoder!.Run(new[]
         {
@@ -154,6 +158,7 @@ public sealed class SupertonicPipeline : IDisposable
             var t = teOut.First(o => o.Name == "text_emb").AsTensor<float>();
             textEmb = new DenseTensor<float>(t.ToArray(), t.Dimensions.ToArray());
         }
+        swTe.Stop();
 
         // 3) Sample noisy latent + latent mask.
         float maxDuration = duration.Max();
@@ -182,6 +187,7 @@ public sealed class SupertonicPipeline : IDisposable
         var totalStepTensor = new DenseTensor<float>(new[] { (float)totalStep }, new[] { 1 });
 
         // 4) Iterative denoising (no CFG).
+        var swCfm = Stopwatch.StartNew();
         for (int step = 0; step < totalStep; step++)
         {
             ct.ThrowIfCancellationRequested();
@@ -202,14 +208,28 @@ public sealed class SupertonicPipeline : IDisposable
             var flat = denoised.ToArray();
             Array.Copy(flat, xt, xt.Length);
         }
+        swCfm.Stop();
 
         // 5) Vocoder -> waveform.
+        var swVoc = Stopwatch.StartNew();
         var latentTensor = new DenseTensor<float>(xt, new[] { 1, latentDim, latentLen });
         using var vocOut = _vocoder!.Run(new[]
         {
             NamedOnnxValue.CreateFromTensor("latent", latentTensor),
         });
-        return vocOut.First(o => o.Name == "wav_tts").AsTensor<float>().ToArray();
+        var wav = vocOut.First(o => o.Name == "wav_tts").AsTensor<float>().ToArray();
+        swVoc.Stop();
+
+        _logger.LogInformation(
+            "Supertonic timings (seq={Seq}, latentLen={LatentLen}, steps={Steps}): " +
+            "dp={Dp}ms, textEnc={Te}ms, cfm={Cfm}ms ({PerStep:F0}ms/step), vocoder={Voc}ms, total={Total}ms",
+            seq, latentLen, totalStep,
+            swDp.ElapsedMilliseconds, swTe.ElapsedMilliseconds, swCfm.ElapsedMilliseconds,
+            totalStep > 0 ? (double)swCfm.ElapsedMilliseconds / totalStep : 0,
+            swVoc.ElapsedMilliseconds,
+            swDp.ElapsedMilliseconds + swTe.ElapsedMilliseconds + swCfm.ElapsedMilliseconds + swVoc.ElapsedMilliseconds);
+
+        return wav;
     }
 
     private void LogSessionMetadata(string name, InferenceSession session)

@@ -8,7 +8,7 @@ using Microsoft.Extensions.Options;
 
 namespace Converse.Api.Llm;
 
-public sealed class OpenAICompatibleLlmService : ILlmService
+public sealed class LmStudioLlmService : ILlmService
 {
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -17,13 +17,13 @@ public sealed class OpenAICompatibleLlmService : ILlmService
     };
 
     private readonly HttpClient _http;
-    private readonly OpenAICompatibleOptions _opts;
-    private readonly ILogger<OpenAICompatibleLlmService> _logger;
+    private readonly LmStudioOptions _opts;
+    private readonly ILogger<LmStudioLlmService> _logger;
 
-    public OpenAICompatibleLlmService(HttpClient http, IOptions<LlmOptions> options, ILogger<OpenAICompatibleLlmService> logger)
+    public LmStudioLlmService(HttpClient http, IOptions<LlmOptions> options, ILogger<LmStudioLlmService> logger)
     {
         _http = http;
-        _opts = options.Value.OpenAICompatible;
+        _opts = options.Value.LmStudio;
         _logger = logger;
     }
 
@@ -34,7 +34,7 @@ public sealed class OpenAICompatibleLlmService : ILlmService
     {
         if (string.IsNullOrWhiteSpace(_opts.BaseUrl))
             throw new InvalidOperationException(
-                "OpenAI-compatible LLM is not configured: Llm:OpenAICompatible:BaseUrl is empty.");
+                "LM Studio LLM is not configured: Llm:LmStudio:BaseUrl is empty.");
 
         var chatMessages = new List<OaiMessage>();
 
@@ -70,22 +70,20 @@ public sealed class OpenAICompatibleLlmService : ILlmService
         if (!response.IsSuccessStatusCode)
         {
             var errorBody = await response.Content.ReadAsStringAsync(ct);
-            _logger.LogError("OpenAI-compatible request failed with {Status}: {Body}",
+            _logger.LogError("LM Studio request failed with {Status}: {Body}",
                 response.StatusCode, errorBody.Length > 500 ? errorBody[..500] : errorBody);
             throw new HttpRequestException(
-                $"OpenAI-compatible request failed with status {response.StatusCode}.", null, response.StatusCode);
+                $"LM Studio request failed with status {response.StatusCode}.", null, response.StatusCode);
         }
 
         var result = await response.Content.ReadFromJsonAsync<OaiResponse>(JsonOptions, ct);
 
         var content = result?.Choices?.FirstOrDefault()?.Message?.Content;
         if (content is null)
-            throw new InvalidOperationException("OpenAI-compatible endpoint returned no choice content.");
+            throw new InvalidOperationException("LM Studio endpoint returned no choice content.");
 
         return content.Trim();
     }
-
-    // --- Private DTOs ---
 
     private sealed record OaiRequest(string Model, OaiMessage[] Messages);
 

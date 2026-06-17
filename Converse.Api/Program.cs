@@ -6,6 +6,7 @@ using Converse.Api.Llm;
 using Converse.Api.Stt;
 using Converse.Api.Tts;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,16 +19,22 @@ builder.Services.Configure<LlmOptions>(builder.Configuration.GetSection(LlmOptio
 builder.Services.AddSingleton<IConversationStore, InMemoryConversationStore>();
 builder.Services.AddSingleton<IAudioConverter, NAudioConverter>();
 builder.Services.AddSingleton<ISpeechToTextService, WhisperSpeechToTextService>();
+builder.Services.AddSingleton<SupertonicPipeline>();
 builder.Services.AddSingleton<ITextToSpeechService, SupertonicTextToSpeechService>();
 builder.Services.AddScoped<ConversationOrchestrator>();
 
-// HTTP clients for LLM providers
-builder.Services.AddHttpClient<GeminiLlmService>();
-builder.Services.AddHttpClient<OpenAICompatibleLlmService>();
+// LLM — v1 ships LM Studio only. Future providers go through ILlmService + a factory.
+builder.Services.AddHttpClient<LmStudioLlmService>();
+builder.Services.AddScoped<ILlmService>(sp => sp.GetRequiredService<LmStudioLlmService>());
 
-// Keyed registrations resolved at turn time
-builder.Services.AddKeyedScoped<ILlmService>("gemini", (sp, _) => sp.GetRequiredService<GeminiLlmService>());
-builder.Services.AddKeyedScoped<ILlmService>("openai-compatible", (sp, _) => sp.GetRequiredService<OpenAICompatibleLlmService>());
+// Health probe HttpClient (used by /health to ping LM Studio /v1/models)
+builder.Services.AddHttpClient("llm-health", (sp, c) =>
+{
+    var opts = sp.GetRequiredService<IOptions<LlmOptions>>().Value;
+    if (!string.IsNullOrWhiteSpace(opts.LmStudio.BaseUrl))
+        c.BaseAddress = new Uri(opts.LmStudio.BaseUrl.TrimEnd('/') + "/");
+    c.Timeout = TimeSpan.FromSeconds(2);
+});
 
 // Kestrel — raise body size limit for audio uploads (multipart form limit must match)
 const long MaxAudioBytes = 50 * 1024 * 1024; // 50 MB
@@ -36,13 +43,40 @@ builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = MaxAud
 
 var app = builder.Build();
 
-app.MapGet("/health", (ISpeechToTextService stt, ITextToSpeechService tts) =>
-    Results.Ok(new { whisper = stt.IsReady, tts = tts.IsReady }));
+app.MapGet("/health", async (
+    ISpeechToTextService stt,
+    ITextToSpeechService tts,
+    IHttpClientFactory httpFactory,
+    CancellationToken ct) =>
+{
+    var llmReady = await ProbeLmStudioAsync(httpFactory, ct);
+    return Results.Ok(new
+    {
+        whisper = stt.IsReady,
+        tts = tts.IsReady,
+        llm = llmReady,
+    });
+});
 
 app.MapConversationEndpoints();
 app.MapSttEndpoints();
 app.MapTtsEndpoints();
 
 app.Run();
+
+static async Task<bool> ProbeLmStudioAsync(IHttpClientFactory factory, CancellationToken ct)
+{
+    var client = factory.CreateClient("llm-health");
+    if (client.BaseAddress is null) return false;
+    try
+    {
+        using var response = await client.GetAsync("v1/models", ct);
+        return response.IsSuccessStatusCode;
+    }
+    catch
+    {
+        return false;
+    }
+}
 
 public partial class Program { } // for WebApplicationFactory; harmless otherwise

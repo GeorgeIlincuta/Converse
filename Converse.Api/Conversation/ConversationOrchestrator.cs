@@ -2,7 +2,6 @@ using Converse.Api.Audio;
 using Converse.Api.Llm;
 using Converse.Api.Stt;
 using Converse.Api.Tts;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Converse.Api.Conversation;
@@ -18,7 +17,7 @@ public sealed class ConversationOrchestrator(
     IAudioConverter audio,
     ISpeechToTextService stt,
     ITextToSpeechService tts,
-    IServiceProvider sp,
+    ILlmService llm,
     ILogger<ConversationOrchestrator> logger)
 {
     // On TTS failure (e.g., model not yet loaded), the session keeps the appended Assistant turn.
@@ -37,11 +36,6 @@ public sealed class ConversationOrchestrator(
         logger.LogInformation("Transcribed {Length} chars", userText.Length);
 
         session.AddTurn(Role.User, userText);
-
-        var llm = sp.GetKeyedService<ILlmService>(session.LlmProvider)
-            ?? throw new InvalidOperationException(
-                $"No LLM provider registered for '{session.LlmProvider}'. " +
-                "Configure 'Llm:DefaultProvider' or pass a valid provider when creating the session.");
 
         var messages = session.Turns
             .Where(t => t.Role != Role.System)

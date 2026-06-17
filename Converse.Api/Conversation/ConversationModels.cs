@@ -8,7 +8,6 @@ public sealed class Session
 {
     public Guid Id { get; init; }
     public string? SystemPrompt { get; init; }
-    public string LlmProvider { get; init; } = "openai-compatible";
     public DateTimeOffset CreatedAt { get; init; }
     public IReadOnlyList<Turn> Turns => _turns.AsReadOnly();
 

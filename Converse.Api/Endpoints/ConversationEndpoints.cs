@@ -1,9 +1,7 @@
-using Converse.Api.Configuration;
 using Converse.Api.Conversation;
 using Converse.Api.Stt;
 using Converse.Api.Tts;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
 
 namespace Converse.Api.Endpoints;
 
@@ -11,16 +9,11 @@ internal static class ConversationEndpoints
 {
     public static IEndpointRouteBuilder MapConversationEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapPost("/conversations", async (
+        app.MapPost("/conversations", (
             CreateConversationRequest req,
-            IConversationStore store,
-            IOptions<LlmOptions> opts) =>
+            IConversationStore store) =>
         {
-            var provider = string.IsNullOrWhiteSpace(req.LlmProvider)
-                ? opts.Value.DefaultProvider
-                : req.LlmProvider;
-
-            var session = store.Create(req.SystemPrompt, provider);
+            var session = store.Create(req.SystemPrompt);
             return Results.Created($"/conversations/{session.Id}", new { id = session.Id });
         }).Produces(201);
 
@@ -67,7 +60,6 @@ internal static class ConversationEndpoints
             {
                 session.Id,
                 session.SystemPrompt,
-                session.LlmProvider,
                 session.CreatedAt,
                 Turns = session.Turns.Select(t => new
                 {
@@ -88,4 +80,4 @@ internal static class ConversationEndpoints
     }
 }
 
-internal sealed record CreateConversationRequest(string? SystemPrompt, string? LlmProvider);
+internal sealed record CreateConversationRequest(string? SystemPrompt);

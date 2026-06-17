@@ -11,7 +11,7 @@ public class InMemoryConversationStoreTests
     public void Create_assigns_id_and_creation_time()
     {
         var before = DateTimeOffset.UtcNow;
-        var session = _store.Create(null, "openai-compatible");
+        var session = _store.Create(null);
         var after = DateTimeOffset.UtcNow;
 
         session.Id.Should().NotBe(Guid.Empty);
@@ -19,17 +19,9 @@ public class InMemoryConversationStoreTests
     }
 
     [Fact]
-    public void Create_uses_specified_provider()
-    {
-        var session = _store.Create(null, "gemini");
-
-        session.LlmProvider.Should().Be("gemini");
-    }
-
-    [Fact]
     public void Create_stores_optional_system_prompt()
     {
-        var session = _store.Create("You are a helpful assistant.", "openai-compatible");
+        var session = _store.Create("You are a helpful assistant.");
 
         session.SystemPrompt.Should().Be("You are a helpful assistant.");
     }
@@ -37,7 +29,7 @@ public class InMemoryConversationStoreTests
     [Fact]
     public void TryGet_returns_true_for_known_session()
     {
-        var created = _store.Create(null, "openai-compatible");
+        var created = _store.Create(null);
 
         var found = _store.TryGet(created.Id, out var retrieved);
 
@@ -57,7 +49,7 @@ public class InMemoryConversationStoreTests
     [Fact]
     public void Delete_removes_session_and_returns_true()
     {
-        var session = _store.Create(null, "openai-compatible");
+        var session = _store.Create(null);
 
         var deleted = _store.Delete(session.Id);
         var found = _store.TryGet(session.Id, out _);
@@ -77,7 +69,7 @@ public class InMemoryConversationStoreTests
     [Fact]
     public void AddTurn_appends_in_order()
     {
-        var session = _store.Create(null, "openai-compatible");
+        var session = _store.Create(null);
 
         session.AddTurn(Role.User, "hi");
         session.AddTurn(Role.Assistant, "hello");

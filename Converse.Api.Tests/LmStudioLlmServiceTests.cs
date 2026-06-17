@@ -9,12 +9,12 @@ using Microsoft.Extensions.Options;
 
 namespace Converse.Api.Tests;
 
-public class OpenAICompatibleLlmServiceTests
+public class LmStudioLlmServiceTests
 {
     private static readonly string OkJson =
         """{"choices":[{"message":{"role":"assistant","content":"ok"}}]}""";
 
-    private static OpenAICompatibleLlmService BuildService(
+    private static LmStudioLlmService BuildService(
         CapturingHandler handler,
         string baseUrl = "http://localhost:1234",
         string model = "test-model",
@@ -23,14 +23,14 @@ public class OpenAICompatibleLlmServiceTests
         var http = new HttpClient(handler);
         var options = Options.Create(new LlmOptions
         {
-            OpenAICompatible = new OpenAICompatibleOptions
+            LmStudio = new LmStudioOptions
             {
                 BaseUrl = baseUrl,
                 Model = model,
                 ApiKey = apiKey,
             },
         });
-        return new OpenAICompatibleLlmService(http, options, NullLogger<OpenAICompatibleLlmService>.Instance);
+        return new LmStudioLlmService(http, options, NullLogger<LmStudioLlmService>.Instance);
     }
 
     private static CapturingHandler OkHandler(string json = "") =>
@@ -196,6 +196,6 @@ public class OpenAICompatibleLlmServiceTests
             new[] { new ChatMessage(Role.User, "hi") }, null, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Llm:OpenAICompatible:BaseUrl*");
+            .WithMessage("*Llm:LmStudio:BaseUrl*");
     }
 }

@@ -7,13 +7,12 @@ public sealed class InMemoryConversationStore : IConversationStore
 {
     private readonly ConcurrentDictionary<Guid, Session> _sessions = new();
 
-    public Session Create(string? systemPrompt, string llmProvider)
+    public Session Create(string? systemPrompt)
     {
         var session = new Session
         {
             Id = Guid.NewGuid(),
             SystemPrompt = systemPrompt,
-            LlmProvider = llmProvider,
             CreatedAt = DateTimeOffset.UtcNow
         };
         _sessions[session.Id] = session;

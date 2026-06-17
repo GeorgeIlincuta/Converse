@@ -6,11 +6,18 @@ public sealed class SupertonicOptions
 
     public string ModelsDirectory { get; set; } = "models/supertonic";
 
-    // Flow-matching sampling step count. 16 is a reasonable default for CFM/F5-style vocoders;
-    // raise for quality, lower for latency.
+    // Directory holding voice-style JSON files (e.g. M1.json).
+    public string VoicesDirectory { get; set; } = "models/supertonic/voices";
+
+    // Default voice-style file name (without extension).
+    public string DefaultVoice { get; set; } = "M1";
+
+    // Language code for synthesis (wrapped as <lang>…</lang>). German by default.
+    public string Language { get; set; } = "de";
+
+    // Flow-matching denoising step count (passed to the model as total_step).
     public int CfmSteps { get; set; } = 16;
 
-    // Classifier-free guidance scale. tts.json reveals the model was trained with prob_text_uncond.
-    // 1.0 = no guidance; 1.5–3.0 typical.
-    public float CfgScale { get; set; } = 1.5f;
+    // Speech speed factor; predicted duration is divided by this. 1.05 matches the reference default.
+    public float Speed { get; set; } = 1.05f;
 }

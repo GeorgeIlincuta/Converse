@@ -55,10 +55,10 @@ public sealed class SupertonicPipeline : IDisposable
 
             _logger.LogInformation(
                 "Supertonic loaded: 4 ONNX sessions, sample_rate={SampleRate}, latent_dim={LatentDim}, " +
-                "chunk_compress_factor={Chunk}, hop_length={Hop}, cfm_steps={Steps}, cfg_scale={Cfg}, " +
+                "chunk_compress_factor={Chunk}, hop_length={Hop}, cfm_steps={Steps}, " +
                 "tts_version={Version}, split={Split}, vocab_size={Vocab}",
                 Config.SampleRate, Config.LatentDim, Config.ChunkCompressFactor, Config.HopLength,
-                _opts.CfmSteps, _opts.CfgScale, Config.TtsVersion, Config.Split, Indexer.VocabSize);
+                _opts.CfmSteps, Config.TtsVersion, Config.Split, Indexer.VocabSize);
 
             LogSessionMetadata("text_encoder", _textEncoder);
             LogSessionMetadata("duration_predictor", _durationPredictor);

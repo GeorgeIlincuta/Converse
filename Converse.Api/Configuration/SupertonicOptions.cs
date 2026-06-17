@@ -20,4 +20,12 @@ public sealed class SupertonicOptions
 
     // Speech speed factor; predicted duration is divided by this. 1.05 matches the reference default.
     public float Speed { get; set; } = 1.05f;
+
+    // Run ONNX inference on the GPU via the DirectML execution provider. Falls back to CPU
+    // if DirectML initialization fails.
+    public bool UseGpu { get; set; } = true;
+
+    // DirectML adapter index. On hybrid-GPU laptops the discrete GPU may be index 0 or 1;
+    // pick the one that benchmarks fastest.
+    public int GpuDeviceId { get; set; } = 0;
 }

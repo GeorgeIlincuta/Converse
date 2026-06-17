@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using SessionOptions = Microsoft.ML.OnnxRuntime.SessionOptions;
 
 namespace Converse.Api.Tts;
 
@@ -56,10 +57,56 @@ public sealed class SupertonicPipeline : IDisposable
             Config = TtsConfig.Load(ttsJsonPath);
             Indexer = UnicodeIndexer.Load(indexerPath);
 
-            _textEncoder = new InferenceSession(textEncoderPath);
-            _durationPredictor = new InferenceSession(durationPath);
-            _vectorEstimator = new InferenceSession(vectorPath);
-            _vocoder = new InferenceSession(vocoderPath);
+            static SessionOptions MakeOptions(bool gpu, int deviceId)
+            {
+                var so = new SessionOptions();
+                if (gpu)
+                {
+                    // DirectML requires these and does not support parallel execution / mem pattern.
+                    so.EnableMemoryPattern = false;
+                    so.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+                    so.AppendExecutionProvider_DML(deviceId);
+                }
+                return so;
+            }
+
+            string ep;
+            if (_opts.UseGpu)
+            {
+                try
+                {
+                    var so = MakeOptions(gpu: true, _opts.GpuDeviceId);
+                    _textEncoder = new InferenceSession(textEncoderPath, so);
+                    _durationPredictor = new InferenceSession(durationPath, so);
+                    _vectorEstimator = new InferenceSession(vectorPath, so);
+                    _vocoder = new InferenceSession(vocoderPath, so);
+                    ep = $"DirectML (device {_opts.GpuDeviceId})";
+                }
+                catch (Exception gpuEx)
+                {
+                    _logger.LogWarning(gpuEx,
+                        "DirectML GPU init failed (device {Device}); falling back to CPU.", _opts.GpuDeviceId);
+                    _textEncoder?.Dispose();
+                    _durationPredictor?.Dispose();
+                    _vectorEstimator?.Dispose();
+                    _vocoder?.Dispose();
+                    var so = MakeOptions(gpu: false, 0);
+                    _textEncoder = new InferenceSession(textEncoderPath, so);
+                    _durationPredictor = new InferenceSession(durationPath, so);
+                    _vectorEstimator = new InferenceSession(vectorPath, so);
+                    _vocoder = new InferenceSession(vocoderPath, so);
+                    ep = "CPU (DirectML fallback)";
+                }
+            }
+            else
+            {
+                var so = MakeOptions(gpu: false, 0);
+                _textEncoder = new InferenceSession(textEncoderPath, so);
+                _durationPredictor = new InferenceSession(durationPath, so);
+                _vectorEstimator = new InferenceSession(vectorPath, so);
+                _vocoder = new InferenceSession(vocoderPath, so);
+                ep = "CPU";
+            }
 
             var voicesDir = Path.GetFullPath(_opts.VoicesDirectory);
             foreach (var file in Directory.EnumerateFiles(voicesDir, "*.json"))
@@ -70,10 +117,10 @@ public sealed class SupertonicPipeline : IDisposable
             _processor = new SupertonicTextProcessor(Indexer);
 
             _logger.LogInformation(
-                "Supertonic loaded: 4 ONNX sessions, sample_rate={SampleRate}, latent_dim={LatentDim}, " +
+                "Supertonic loaded: 4 ONNX sessions, execution_provider={Ep}, sample_rate={SampleRate}, latent_dim={LatentDim}, " +
                 "chunk_compress_factor={Chunk}, hop_length={Hop}, cfm_steps={Steps}, " +
                 "tts_version={Version}, split={Split}, vocab_size={Vocab}",
-                Config.SampleRate, Config.LatentDim, Config.ChunkCompressFactor, Config.HopLength,
+                ep, Config.SampleRate, Config.LatentDim, Config.ChunkCompressFactor, Config.HopLength,
                 _opts.CfmSteps, Config.TtsVersion, Config.Split, Indexer.VocabSize);
 
             LogSessionMetadata("text_encoder", _textEncoder);

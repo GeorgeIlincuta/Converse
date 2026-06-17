@@ -23,7 +23,7 @@ public sealed class SupertonicPipeline : IDisposable
     private readonly InferenceSession? _vectorEstimator;
     private readonly InferenceSession? _vocoder;
 
-    private readonly VoiceStyle? _voice;
+    private readonly Dictionary<string, VoiceStyle> _voices = new();
     private readonly SupertonicTextProcessor? _processor;
 
     public TtsConfig? Config { get; }
@@ -60,10 +60,12 @@ public sealed class SupertonicPipeline : IDisposable
             _vectorEstimator = new InferenceSession(vectorPath);
             _vocoder = new InferenceSession(vocoderPath);
 
-            var voicePath = Path.Combine(Path.GetFullPath(_opts.VoicesDirectory), _opts.DefaultVoice + ".json");
-            if (!File.Exists(voicePath))
-                throw new FileNotFoundException($"Required Supertonic voice file missing: {voicePath}");
-            _voice = VoiceStyle.Load(voicePath);
+            var voicesDir = Path.GetFullPath(_opts.VoicesDirectory);
+            foreach (var file in Directory.EnumerateFiles(voicesDir, "*.json"))
+                _voices[Path.GetFileNameWithoutExtension(file)] = VoiceStyle.Load(file);
+            if (!_voices.ContainsKey(_opts.DefaultVoice))
+                throw new FileNotFoundException(
+                    $"Default Supertonic voice '{_opts.DefaultVoice}' not found in {voicesDir}");
             _processor = new SupertonicTextProcessor(Indexer);
 
             _logger.LogInformation(
@@ -87,13 +89,20 @@ public sealed class SupertonicPipeline : IDisposable
         }
     }
 
-    public float[] Synthesize(string text, CancellationToken ct)
+    public float[] Synthesize(string text, string? voice, string? lang, CancellationToken ct)
     {
-        if (!IsReady || _processor is null || _voice is null || Config is null)
+        if (!IsReady || _processor is null || Config is null)
             throw new InvalidOperationException(
                 "Supertonic pipeline is not ready; check models/voice directory configuration and startup logs.");
 
-        int maxLen = (_opts.Language is "ko" or "ja") ? 120 : 300;
+        var voiceName = string.IsNullOrWhiteSpace(voice) ? _opts.DefaultVoice : voice!;
+        if (!_voices.TryGetValue(voiceName, out var style))
+            throw new ArgumentException(
+                $"Unknown voice '{voiceName}'. Available: {string.Join(", ", _voices.Keys.OrderBy(k => k))}.");
+
+        var language = string.IsNullOrWhiteSpace(lang) ? _opts.Language : lang!;
+
+        int maxLen = (language is "ko" or "ja") ? 120 : 300;
         var chunks = SupertonicHelpers.ChunkText(text, maxLen);
 
         const float silenceSeconds = 0.3f;
@@ -101,7 +110,7 @@ public sealed class SupertonicPipeline : IDisposable
         foreach (var chunk in chunks)
         {
             ct.ThrowIfCancellationRequested();
-            var wav = InferChunk(chunk, ct);
+            var wav = InferChunk(chunk, style, language, ct);
             if (output.Count > 0)
                 output.AddRange(new float[(int)(silenceSeconds * Config.SampleRate)]);
             output.AddRange(wav);
@@ -109,15 +118,15 @@ public sealed class SupertonicPipeline : IDisposable
         return output.ToArray();
     }
 
-    private float[] InferChunk(string chunk, CancellationToken ct)
+    private float[] InferChunk(string chunk, VoiceStyle voice, string lang, CancellationToken ct)
     {
-        var (textIds, textMask) = _processor!.Encode(chunk, _opts.Language);
+        var (textIds, textMask) = _processor!.Encode(chunk, lang);
         int seq = textIds.Length;
 
         var textIdsTensor = new DenseTensor<long>(textIds, new[] { 1, seq });
         var textMaskTensor = new DenseTensor<float>(textMask, new[] { 1, 1, seq });
-        var styleTtl = new DenseTensor<float>(_voice!.Ttl, _voice.TtlShape.Select(x => (int)x).ToArray());
-        var styleDp = new DenseTensor<float>(_voice.Dp, _voice.DpShape.Select(x => (int)x).ToArray());
+        var styleTtl = new DenseTensor<float>(voice.Ttl, voice.TtlShape.Select(x => (int)x).ToArray());
+        var styleDp = new DenseTensor<float>(voice.Dp, voice.DpShape.Select(x => (int)x).ToArray());
 
         // 1) Duration predictor -> one total-duration value per utterance.
         float[] duration;

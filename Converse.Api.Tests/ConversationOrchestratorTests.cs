@@ -40,6 +40,9 @@ internal sealed class FakeTts : ITextToSpeechService
         ReceivedText = text;
         return Task.FromResult(new[] { 0.5f, 0.6f });
     }
+
+    public Task<float[]> SynthesizeAsync(string text, string? voice, string? lang, CancellationToken ct)
+        => SynthesizeAsync(text, ct);
 }
 
 internal sealed class FakeLlm : ILlmService

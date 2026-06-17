@@ -16,7 +16,16 @@ internal static class TtsEndpoints
             if (!tts.IsReady)
                 return Results.Problem("Supertonic TTS is not ready; check model path configuration.", statusCode: 503);
 
-            var samples = await tts.SynthesizeAsync(req.Text, ct);
+            float[] samples;
+            try
+            {
+                samples = await tts.SynthesizeAsync(req.Text, req.Voice, req.Lang, ct);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Problem(ex.Message, statusCode: 400);
+            }
+
             var bytes = audio.PcmToWav(samples, tts.SampleRate);
             return Results.File(bytes, "audio/wav");
         });
@@ -25,4 +34,4 @@ internal static class TtsEndpoints
     }
 }
 
-internal sealed record TtsRequest(string Text);
+internal sealed record TtsRequest(string Text, string? Voice = null, string? Lang = null);

@@ -41,12 +41,47 @@ public class SupertonicPipelineSmokeTests
         using var pipeline = new SupertonicPipeline(opts, NullLogger<SupertonicPipeline>.Instance);
         pipeline.IsReady.Should().BeTrue();
 
-        var samples = pipeline.Synthesize("Hallo, wie geht es dir?", CancellationToken.None);
+        var samples = pipeline.Synthesize("Hallo, wie geht es dir?", null, null, CancellationToken.None);
 
         samples.Should().NotBeEmpty();
         samples.Should().OnlyContain(s => !float.IsNaN(s) && !float.IsInfinity(s));
         samples.Should().OnlyContain(s => s >= -1f && s <= 1f);
         // At least ~0.3s of audio at 44.1 kHz for a short sentence.
         samples.Length.Should().BeGreaterThan((int)(0.3 * pipeline.SampleRate));
+    }
+
+    private static SupertonicPipeline? TryBuildPipeline()
+    {
+        var modelsDir = FindModelsDir();
+        if (modelsDir is null || !File.Exists(Path.Combine(modelsDir, "voices", "M1.json")))
+            return null;
+        var opts = Options.Create(new SupertonicOptions
+        {
+            ModelsDirectory = modelsDir,
+            VoicesDirectory = Path.Combine(modelsDir, "voices"),
+            DefaultVoice = "M1",
+            Language = "de",
+            CfmSteps = 16,
+            Speed = 1.05f,
+        });
+        return new SupertonicPipeline(opts, NullLogger<SupertonicPipeline>.Instance);
+    }
+
+    [Fact]
+    public void Synthesize_with_non_default_voice_produces_audio()
+    {
+        using var pipeline = TryBuildPipeline();
+        if (pipeline is null) return; // models not present — skip
+        var samples = pipeline.Synthesize("Guten Morgen.", "F1", "de", CancellationToken.None);
+        samples.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void Synthesize_with_unknown_voice_throws_argument_exception()
+    {
+        using var pipeline = TryBuildPipeline();
+        if (pipeline is null) return; // models not present — skip
+        var act = () => pipeline.Synthesize("Hallo.", "NopeVoice", "de", CancellationToken.None);
+        act.Should().Throw<ArgumentException>();
     }
 }

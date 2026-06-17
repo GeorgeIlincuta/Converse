@@ -14,7 +14,8 @@ public sealed class SupertonicTextToSpeechService : ITextToSpeechService
     public int SampleRate => _pipeline.Config?.SampleRate ?? 0;
 
     public Task<float[]> SynthesizeAsync(string text, CancellationToken ct)
-    {
-        return Task.FromResult(_pipeline.Synthesize(text, ct));
-    }
+        => SynthesizeAsync(text, null, null, ct);
+
+    public Task<float[]> SynthesizeAsync(string text, string? voice, string? lang, CancellationToken ct)
+        => Task.FromResult(_pipeline.Synthesize(text, voice, lang, ct));
 }

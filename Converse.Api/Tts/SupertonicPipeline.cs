@@ -2,6 +2,7 @@ using Converse.Api.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.ML.OnnxRuntime;
+using Microsoft.ML.OnnxRuntime.Tensors;
 
 namespace Converse.Api.Tts;
 
@@ -85,26 +86,118 @@ public sealed class SupertonicPipeline : IDisposable
 
     public float[] Synthesize(string text, CancellationToken ct)
     {
-        if (!IsReady)
+        if (!IsReady || _processor is null || _voice is null || Config is null)
             throw new InvalidOperationException(
-                "Supertonic pipeline is not ready; check models directory configuration and startup logs.");
+                "Supertonic pipeline is not ready; check models/voice directory configuration and startup logs.");
 
-        // TODO: implement the 4-stage pipeline.
-        //
-        //   1. tokenIds = Indexer.Encode(text)
-        //   2. textHidden = textEncoder.Run({ <tokenIds>, <maybe style/lang ids> })
-        //   3. durations = durationPredictor.Run({ <textHidden>, <maybe style/sentence ids> })
-        //   4. expanded = length-regulate textHidden by durations
-        //   5. CFM sampling loop (opts.CfmSteps iterations) over vectorEstimator with cfg_scale = opts.CfgScale
-        //   6. waveform = vocoder.Run({ <latent> })
-        //
-        // The exact tensor input names / shapes / dtypes are logged at startup.
-        // Inspect the startup output before wiring this method — guesses will produce garbage audio
-        // or runtime crashes (ORT validates shape strictly).
-        throw new NotImplementedException(
-            "Supertonic synthesis is scaffolded but not yet wired. " +
-            "Run the app once and read the 'Supertonic loaded' / 'session' tensor metadata in the logs, " +
-            "then implement the 4-stage pipeline using those exact input names.");
+        int maxLen = (_opts.Language is "ko" or "ja") ? 120 : 300;
+        var chunks = SupertonicHelpers.ChunkText(text, maxLen);
+
+        const float silenceSeconds = 0.3f;
+        var output = new List<float>();
+        foreach (var chunk in chunks)
+        {
+            ct.ThrowIfCancellationRequested();
+            var wav = InferChunk(chunk, ct);
+            if (output.Count > 0)
+                output.AddRange(new float[(int)(silenceSeconds * Config.SampleRate)]);
+            output.AddRange(wav);
+        }
+        return output.ToArray();
+    }
+
+    private float[] InferChunk(string chunk, CancellationToken ct)
+    {
+        var (textIds, textMask) = _processor!.Encode(chunk, _opts.Language);
+        int seq = textIds.Length;
+
+        var textIdsTensor = new DenseTensor<long>(textIds, new[] { 1, seq });
+        var textMaskTensor = new DenseTensor<float>(textMask, new[] { 1, 1, seq });
+        var styleTtl = new DenseTensor<float>(_voice!.Ttl, _voice.TtlShape.Select(x => (int)x).ToArray());
+        var styleDp = new DenseTensor<float>(_voice.Dp, _voice.DpShape.Select(x => (int)x).ToArray());
+
+        // 1) Duration predictor -> one total-duration value per utterance.
+        float[] duration;
+        using (var dpOut = _durationPredictor!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("text_ids", textIdsTensor),
+            NamedOnnxValue.CreateFromTensor("style_dp", styleDp),
+            NamedOnnxValue.CreateFromTensor("text_mask", textMaskTensor),
+        }))
+        {
+            duration = dpOut.First(o => o.Name == "duration").AsTensor<float>().ToArray();
+        }
+        for (int i = 0; i < duration.Length; i++)
+            duration[i] /= _opts.Speed;
+
+        // 2) Text encoder -> text_emb (copied out so we can dispose the run results).
+        DenseTensor<float> textEmb;
+        using (var teOut = _textEncoder!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("text_ids", textIdsTensor),
+            NamedOnnxValue.CreateFromTensor("style_ttl", styleTtl),
+            NamedOnnxValue.CreateFromTensor("text_mask", textMaskTensor),
+        }))
+        {
+            var t = teOut.First(o => o.Name == "text_emb").AsTensor<float>();
+            textEmb = new DenseTensor<float>(t.ToArray(), t.Dimensions.ToArray());
+        }
+
+        // 3) Sample noisy latent + latent mask.
+        float maxDuration = duration.Max();
+        int latentLen = SupertonicHelpers.ComputeLatentLen(
+            maxDuration, Config!.SampleRate, Config.BaseChunkSize, Config.ChunkCompressFactor);
+        int latentDim = Config.LatentDim * Config.ChunkCompressFactor;
+
+        long wavLength = (long)(maxDuration * Config.SampleRate);
+        long latentLength = SupertonicHelpers.LatentLengthFor(
+            wavLength, Config.BaseChunkSize, Config.ChunkCompressFactor);
+        var latentMask = SupertonicHelpers.Mask(latentLength, latentLen);
+
+        var xt = new float[latentDim * latentLen];
+        var rng = new Random();
+        for (int d = 0; d < latentDim; d++)
+            for (int t = 0; t < latentLen; t++)
+            {
+                double u1 = 1.0 - rng.NextDouble();
+                double u2 = 1.0 - rng.NextDouble();
+                float sample = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
+                xt[d * latentLen + t] = sample * latentMask[t];
+            }
+
+        var latentMaskTensor = new DenseTensor<float>(latentMask, new[] { 1, 1, latentLen });
+        int totalStep = _opts.CfmSteps;
+        var totalStepTensor = new DenseTensor<float>(new[] { (float)totalStep }, new[] { 1 });
+
+        // 4) Iterative denoising (no CFG).
+        for (int step = 0; step < totalStep; step++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var noisy = new DenseTensor<float>(xt, new[] { 1, latentDim, latentLen });
+            var currentStepTensor = new DenseTensor<float>(new[] { (float)step }, new[] { 1 });
+
+            using var veOut = _vectorEstimator!.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("noisy_latent", noisy),
+                NamedOnnxValue.CreateFromTensor("text_emb", textEmb),
+                NamedOnnxValue.CreateFromTensor("style_ttl", styleTtl),
+                NamedOnnxValue.CreateFromTensor("text_mask", textMaskTensor),
+                NamedOnnxValue.CreateFromTensor("latent_mask", latentMaskTensor),
+                NamedOnnxValue.CreateFromTensor("total_step", totalStepTensor),
+                NamedOnnxValue.CreateFromTensor("current_step", currentStepTensor),
+            });
+            var denoised = veOut.First(o => o.Name == "denoised_latent").AsTensor<float>();
+            var flat = denoised.ToArray();
+            Array.Copy(flat, xt, xt.Length);
+        }
+
+        // 5) Vocoder -> waveform.
+        var latentTensor = new DenseTensor<float>(xt, new[] { 1, latentDim, latentLen });
+        using var vocOut = _vocoder!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("latent", latentTensor),
+        });
+        return vocOut.First(o => o.Name == "wav_tts").AsTensor<float>().ToArray();
     }
 
     private void LogSessionMetadata(string name, InferenceSession session)

@@ -22,6 +22,9 @@ public sealed class SupertonicPipeline : IDisposable
     private readonly InferenceSession? _vectorEstimator;
     private readonly InferenceSession? _vocoder;
 
+    private readonly VoiceStyle? _voice;
+    private readonly SupertonicTextProcessor? _processor;
+
     public TtsConfig? Config { get; }
     public UnicodeIndexer? Indexer { get; }
     public bool IsReady { get; }
@@ -52,6 +55,12 @@ public sealed class SupertonicPipeline : IDisposable
             _durationPredictor = new InferenceSession(durationPath);
             _vectorEstimator = new InferenceSession(vectorPath);
             _vocoder = new InferenceSession(vocoderPath);
+
+            var voicePath = Path.Combine(Path.GetFullPath(_opts.VoicesDirectory), _opts.DefaultVoice + ".json");
+            if (!File.Exists(voicePath))
+                throw new FileNotFoundException($"Required Supertonic voice file missing: {voicePath}");
+            _voice = VoiceStyle.Load(voicePath);
+            _processor = new SupertonicTextProcessor(Indexer);
 
             _logger.LogInformation(
                 "Supertonic loaded: 4 ONNX sessions, sample_rate={SampleRate}, latent_dim={LatentDim}, " +

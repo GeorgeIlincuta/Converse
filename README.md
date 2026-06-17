@@ -137,8 +137,7 @@ Notes:
 - `LmStudio:Model` is passed through as-is; `"local-model"` works because LM
   Studio routes unknown ids to the currently loaded model.
 - On a hybrid-GPU laptop, the discrete GPU may be `GpuDeviceId` 0 or 1 — pick the
-  one that benchmarks fastest. Set `UseGpu: false` to run TTS entirely on CPU
-  (e.g. to free the GPU/VRAM while gaming).
+  one that benchmarks fastest. Set `UseGpu: false` to run TTS entirely on CPU.
 
 ## Running
 

@@ -41,7 +41,13 @@ const long MaxAudioBytes = 50 * 1024 * 1024; // 50 MB
 builder.WebHost.ConfigureKestrel(k => k.Limits.MaxRequestBodySize = MaxAudioBytes);
 builder.Services.Configure<FormOptions>(o => o.MultipartBodyLengthLimit = MaxAudioBytes);
 
+// CORS — allow browser/extension callers (local-only API; tighten origins later).
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
+    policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+
 var app = builder.Build();
+
+app.UseCors();
 
 app.MapGet("/health", async (
     ISpeechToTextService stt,

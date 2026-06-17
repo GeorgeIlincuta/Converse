@@ -108,16 +108,26 @@ guard against.
 
 ## Error handling
 
-A missing or unparseable voice file, or missing models, leaves the pipeline
-`IsReady = false` with a clear startup log (same pattern as the existing model
-checks). `/tts` then returns `503`, never an unhandled throw.
+A missing or unparseable default voice file, or missing models, leaves the
+pipeline `IsReady = false` with a clear startup log (same pattern as the
+existing model checks). `/tts` then returns `503`, never an unhandled throw.
+A request for an unknown voice or an invalid language returns `400`.
 
 ## Voice / language selection
 
-v1 ships **config-default only** (voice `M1`, language `de`). Per-request
-`voice`/`lang` overrides on `/tts` are deferred to the Chrome-extension phase;
-adding them later is a small, isolated change (optional request fields →
-select/parse a different `VoiceStyle`, change the lang tag).
+All preset voices (M1–M5, F1–F5) load at startup; `DefaultVoice` (M1) and
+`Language` (de) are the config defaults. `/tts` accepts **optional per-request
+`voice` and `lang`** fields so the Chrome extension can choose them per call;
+when omitted, the defaults apply. An unknown voice or unsupported language is a
+`400`. The conversation (`/turn`) path always uses the defaults (it calls the
+parameterless overload), so it is unaffected.
+
+## CORS (browser/extension access)
+
+The API enables CORS so a Chrome extension can call `/tts` from the browser
+(content-script requests are subject to cross-origin rules). A permissive
+default policy (any origin) is acceptable for this local-only API and can be
+tightened to the extension's `chrome-extension://<id>` origin later.
 
 ## Testing
 
@@ -130,9 +140,15 @@ select/parse a different `VoiceStyle`, change the lang tag).
   real pipeline on a short German phrase; asserts output is non-empty, all
   samples finite (no NaN/Inf) and within `[-1, 1]`, and length is plausible for
   the input. Subjective correctness verified by listening to a generated WAV.
+- **Voice override** — a non-default voice synthesizes; an unknown voice raises
+  `ArgumentException` (mapped to `400`).
+- **CORS** — a request carrying an `Origin` header comes back with an
+  `Access-Control-Allow-Origin` header.
 
 ## Success criteria
 
 `POST /tts` with German text returns a valid 44.1 kHz mono WAV containing
-intelligible German speech in the M1 voice, with umlauts and `ß` pronounced
-correctly, and `/health` continues to report `tts: true`.
+intelligible German speech in the M1 voice (with umlauts and `ß` pronounced
+correctly), honours optional `voice`/`lang` overrides, is reachable
+cross-origin from a browser extension, and `/health` continues to report
+`tts: true`.

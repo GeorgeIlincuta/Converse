@@ -1035,22 +1035,363 @@ Play `.refsrc/german.wav`. Confirm it is intelligible German in the M1 voice wit
 
 ---
 
-## Task 11: Clean up reference material
+## Task 11: Per-request voice/lang overrides (multi-voice)
 
 **Files:**
-- Delete: `.refsrc/` (untracked reference + scratch files)
+- Modify: `Converse.Api/Tts/ITextToSpeechService.cs`
+- Modify: `Converse.Api/Tts/SupertonicTextToSpeechService.cs`
+- Modify: `Converse.Api/Tts/SupertonicPipeline.cs`
+- Modify: `Converse.Api/Endpoints/TtsEndpoints.cs`
+- Test: `Converse.Api.Tests/SupertonicPipelineSmokeTests.cs`
 
-- [ ] **Step 1: Remove the scratch directory**
+- [ ] **Step 1: Load ALL voices at startup (replace the single-voice load from Task 7)**
+
+In `SupertonicPipeline`, replace the field `private readonly VoiceStyle? _voice;` with:
+```csharp
+    private readonly Dictionary<string, VoiceStyle> _voices = new();
+```
+In the constructor, replace the Task 7 voice-loading block (the `voicePath`/`_voice = VoiceStyle.Load(...)` lines) with:
+```csharp
+            var voicesDir = Path.GetFullPath(_opts.VoicesDirectory);
+            foreach (var file in Directory.EnumerateFiles(voicesDir, "*.json"))
+                _voices[Path.GetFileNameWithoutExtension(file)] = VoiceStyle.Load(file);
+            if (!_voices.ContainsKey(_opts.DefaultVoice))
+                throw new FileNotFoundException(
+                    $"Default Supertonic voice '{_opts.DefaultVoice}' not found in {voicesDir}");
+            _processor = new SupertonicTextProcessor(Indexer);
+```
+(`Directory.EnumerateFiles` throws if the directory is missing — caught by the existing `catch`, so the pipeline becomes not-ready, as before.)
+
+- [ ] **Step 2: Change `Synthesize`/`InferChunk` to take voice + lang (replace the Task 8 versions)**
+
+Replace the `Synthesize` and `InferChunk` methods from Task 8 with these. Only the signatures, voice/lang resolution, and the `styleTtl`/`styleDp`/`Encode` references change; the duration/encoder/CFM/vocoder body is identical to Task 8:
+```csharp
+    public float[] Synthesize(string text, string? voice, string? lang, CancellationToken ct)
+    {
+        if (!IsReady || _processor is null || Config is null)
+            throw new InvalidOperationException(
+                "Supertonic pipeline is not ready; check models/voice directory configuration and startup logs.");
+
+        var voiceName = string.IsNullOrWhiteSpace(voice) ? _opts.DefaultVoice : voice!;
+        if (!_voices.TryGetValue(voiceName, out var style))
+            throw new ArgumentException(
+                $"Unknown voice '{voiceName}'. Available: {string.Join(", ", _voices.Keys.OrderBy(k => k))}.");
+
+        var language = string.IsNullOrWhiteSpace(lang) ? _opts.Language : lang!;
+
+        int maxLen = (language is "ko" or "ja") ? 120 : 300;
+        var chunks = SupertonicHelpers.ChunkText(text, maxLen);
+
+        const float silenceSeconds = 0.3f;
+        var output = new List<float>();
+        foreach (var chunk in chunks)
+        {
+            ct.ThrowIfCancellationRequested();
+            var wav = InferChunk(chunk, style, language, ct);
+            if (output.Count > 0)
+                output.AddRange(new float[(int)(silenceSeconds * Config.SampleRate)]);
+            output.AddRange(wav);
+        }
+        return output.ToArray();
+    }
+
+    private float[] InferChunk(string chunk, VoiceStyle voice, string lang, CancellationToken ct)
+    {
+        var (textIds, textMask) = _processor!.Encode(chunk, lang);
+        int seq = textIds.Length;
+
+        var textIdsTensor = new DenseTensor<long>(textIds, new[] { 1, seq });
+        var textMaskTensor = new DenseTensor<float>(textMask, new[] { 1, 1, seq });
+        var styleTtl = new DenseTensor<float>(voice.Ttl, voice.TtlShape.Select(x => (int)x).ToArray());
+        var styleDp = new DenseTensor<float>(voice.Dp, voice.DpShape.Select(x => (int)x).ToArray());
+
+        // 1) Duration predictor -> one total-duration value per utterance.
+        float[] duration;
+        using (var dpOut = _durationPredictor!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("text_ids", textIdsTensor),
+            NamedOnnxValue.CreateFromTensor("style_dp", styleDp),
+            NamedOnnxValue.CreateFromTensor("text_mask", textMaskTensor),
+        }))
+        {
+            duration = dpOut.First(o => o.Name == "duration").AsTensor<float>().ToArray();
+        }
+        for (int i = 0; i < duration.Length; i++)
+            duration[i] /= _opts.Speed;
+
+        // 2) Text encoder -> text_emb (copied out so we can dispose the run results).
+        DenseTensor<float> textEmb;
+        using (var teOut = _textEncoder!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("text_ids", textIdsTensor),
+            NamedOnnxValue.CreateFromTensor("style_ttl", styleTtl),
+            NamedOnnxValue.CreateFromTensor("text_mask", textMaskTensor),
+        }))
+        {
+            var t = teOut.First(o => o.Name == "text_emb").AsTensor<float>();
+            textEmb = new DenseTensor<float>(t.ToArray(), t.Dimensions.ToArray());
+        }
+
+        // 3) Sample noisy latent + latent mask.
+        float maxDuration = duration.Max();
+        int latentLen = SupertonicHelpers.ComputeLatentLen(
+            maxDuration, Config!.SampleRate, Config.BaseChunkSize, Config.ChunkCompressFactor);
+        int latentDim = Config.LatentDim * Config.ChunkCompressFactor;
+
+        long wavLength = (long)(maxDuration * Config.SampleRate);
+        long latentLength = SupertonicHelpers.LatentLengthFor(
+            wavLength, Config.BaseChunkSize, Config.ChunkCompressFactor);
+        var latentMask = SupertonicHelpers.Mask(latentLength, latentLen);
+
+        var xt = new float[latentDim * latentLen];
+        var rng = new Random();
+        for (int d = 0; d < latentDim; d++)
+            for (int t = 0; t < latentLen; t++)
+            {
+                double u1 = 1.0 - rng.NextDouble();
+                double u2 = 1.0 - rng.NextDouble();
+                float sample = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2));
+                xt[d * latentLen + t] = sample * latentMask[t];
+            }
+
+        var latentMaskTensor = new DenseTensor<float>(latentMask, new[] { 1, 1, latentLen });
+        int totalStep = _opts.CfmSteps;
+        var totalStepTensor = new DenseTensor<float>(new[] { (float)totalStep }, new[] { 1 });
+
+        // 4) Iterative denoising (no CFG).
+        for (int step = 0; step < totalStep; step++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var noisy = new DenseTensor<float>(xt, new[] { 1, latentDim, latentLen });
+            var currentStepTensor = new DenseTensor<float>(new[] { (float)step }, new[] { 1 });
+
+            using var veOut = _vectorEstimator!.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor("noisy_latent", noisy),
+                NamedOnnxValue.CreateFromTensor("text_emb", textEmb),
+                NamedOnnxValue.CreateFromTensor("style_ttl", styleTtl),
+                NamedOnnxValue.CreateFromTensor("text_mask", textMaskTensor),
+                NamedOnnxValue.CreateFromTensor("latent_mask", latentMaskTensor),
+                NamedOnnxValue.CreateFromTensor("total_step", totalStepTensor),
+                NamedOnnxValue.CreateFromTensor("current_step", currentStepTensor),
+            });
+            var denoised = veOut.First(o => o.Name == "denoised_latent").AsTensor<float>();
+            var flat = denoised.ToArray();
+            Array.Copy(flat, xt, xt.Length);
+        }
+
+        // 5) Vocoder -> waveform.
+        var latentTensor = new DenseTensor<float>(xt, new[] { 1, latentDim, latentLen });
+        using var vocOut = _vocoder!.Run(new[]
+        {
+            NamedOnnxValue.CreateFromTensor("latent", latentTensor),
+        });
+        return vocOut.First(o => o.Name == "wav_tts").AsTensor<float>().ToArray();
+    }
+```
+
+- [ ] **Step 3: Add the 4-arg overload to the interface and service**
+
+In `Converse.Api/Tts/ITextToSpeechService.cs`, add below the existing `SynthesizeAsync`:
+```csharp
+    Task<float[]> SynthesizeAsync(string text, string? voice, string? lang, CancellationToken ct);
+```
+Replace `Converse.Api/Tts/SupertonicTextToSpeechService.cs`'s single `SynthesizeAsync` method with both overloads:
+```csharp
+    public Task<float[]> SynthesizeAsync(string text, CancellationToken ct)
+        => SynthesizeAsync(text, null, null, ct);
+
+    public Task<float[]> SynthesizeAsync(string text, string? voice, string? lang, CancellationToken ct)
+        => Task.FromResult(_pipeline.Synthesize(text, voice, lang, ct));
+```
+(The conversation `/turn` path keeps calling the 2-arg overload, so it is unaffected.)
+
+- [ ] **Step 4: Accept `voice`/`lang` on the `/tts` endpoint and map bad input to 400**
+
+In `Converse.Api/Endpoints/TtsEndpoints.cs`, replace the `/tts` handler body and the `TtsRequest` record:
+```csharp
+        app.MapPost("/tts", async (
+            TtsRequest req,
+            ITextToSpeechService tts,
+            IAudioConverter audio,
+            CancellationToken ct) =>
+        {
+            if (!tts.IsReady)
+                return Results.Problem("Supertonic TTS is not ready; check model path configuration.", statusCode: 503);
+
+            float[] samples;
+            try
+            {
+                samples = await tts.SynthesizeAsync(req.Text, req.Voice, req.Lang, ct);
+            }
+            catch (ArgumentException ex)
+            {
+                return Results.Problem(ex.Message, statusCode: 400);
+            }
+
+            var bytes = audio.PcmToWav(samples, tts.SampleRate);
+            return Results.File(bytes, "audio/wav");
+        });
+```
+and:
+```csharp
+internal sealed record TtsRequest(string Text, string? Voice = null, string? Lang = null);
+```
+
+- [ ] **Step 5: Add voice-override cases to the gated smoke test**
+
+Append these members to the `SupertonicPipelineSmokeTests` class in `Converse.Api.Tests/SupertonicPipelineSmokeTests.cs` (`FindModelsDir` already exists from Task 9):
+```csharp
+    private static SupertonicPipeline? TryBuildPipeline()
+    {
+        var modelsDir = FindModelsDir();
+        if (modelsDir is null || !File.Exists(Path.Combine(modelsDir, "voices", "M1.json")))
+            return null;
+        var opts = Options.Create(new SupertonicOptions
+        {
+            ModelsDirectory = modelsDir,
+            VoicesDirectory = Path.Combine(modelsDir, "voices"),
+            DefaultVoice = "M1",
+            Language = "de",
+            CfmSteps = 16,
+            Speed = 1.05f,
+        });
+        return new SupertonicPipeline(opts, NullLogger<SupertonicPipeline>.Instance);
+    }
+
+    [Fact]
+    public void Synthesize_with_non_default_voice_produces_audio()
+    {
+        using var pipeline = TryBuildPipeline();
+        if (pipeline is null) return; // models not present — skip
+        var samples = pipeline.Synthesize("Guten Morgen.", "F1", "de", CancellationToken.None);
+        samples.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public void Synthesize_with_unknown_voice_throws_argument_exception()
+    {
+        using var pipeline = TryBuildPipeline();
+        if (pipeline is null) return; // models not present — skip
+        var act = () => pipeline.Synthesize("Hallo.", "NopeVoice", "de", CancellationToken.None);
+        act.Should().Throw<ArgumentException>();
+    }
+```
+
+- [ ] **Step 6: Build and run tests**
+
+Run: `dotnet build -clp:ErrorsOnly` then `dotnet test`
+Expected: Build succeeded; all tests PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Converse.Api/Tts/ITextToSpeechService.cs Converse.Api/Tts/SupertonicTextToSpeechService.cs Converse.Api/Tts/SupertonicPipeline.cs Converse.Api/Endpoints/TtsEndpoints.cs Converse.Api.Tests/SupertonicPipelineSmokeTests.cs
+git commit -m "Support per-request voice/lang overrides on /tts"
+```
+
+---
+
+## Task 12: Enable CORS for browser/extension access
+
+**Files:**
+- Modify: `Converse.Api/Program.cs`
+- Test: `Converse.Api.Tests/CorsTests.cs`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `Converse.Api.Tests/CorsTests.cs`:
+```csharp
+using FluentAssertions;
+using Microsoft.AspNetCore.Mvc.Testing;
+
+namespace Converse.Api.Tests;
+
+public class CorsTests : IClassFixture<WebApplicationFactory<Program>>
+{
+    private readonly WebApplicationFactory<Program> _factory;
+    public CorsTests(WebApplicationFactory<Program> factory) => _factory = factory;
+
+    [Fact]
+    public async Task Cross_origin_request_gets_allow_origin_header()
+    {
+        var client = _factory.CreateClient();
+        var req = new HttpRequestMessage(HttpMethod.Get, "/health");
+        req.Headers.Add("Origin", "chrome-extension://abcdefghijklmnop");
+
+        var resp = await client.SendAsync(req);
+
+        resp.Headers.Contains("Access-Control-Allow-Origin").Should().BeTrue();
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `dotnet test --filter FullyQualifiedName~CorsTests`
+Expected: FAIL — no `Access-Control-Allow-Origin` header (CORS not configured).
+
+- [ ] **Step 3: Add CORS to `Program.cs`**
+
+In `Converse.Api/Program.cs`, after the other `builder.Services` registrations (before `var app = builder.Build();`), add:
+```csharp
+// CORS — allow browser/extension callers (local-only API; tighten origins later).
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
+    policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod()));
+```
+After `var app = builder.Build();` and before the first `app.Map...` call, add:
+```csharp
+app.UseCors();
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `dotnet test --filter FullyQualifiedName~CorsTests`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Converse.Api/Program.cs Converse.Api.Tests/CorsTests.cs
+git commit -m "Enable CORS so the Chrome extension can call the API"
+```
+
+---
+
+## Task 13: Final verification, cleanup, and push
+
+**Files:** none tracked (manual + cleanup).
+
+- [ ] **Step 1: Restart the app and verify overrides + CORS over HTTP**
+
+```bash
+cd "C:/LOCAL FILES/Claude Code/DotNet/Converse" && ASPNETCORE_ENVIRONMENT=Development dotnet run --project Converse.Api > .refsrc/run.log 2>&1 &
+sleep 12
+# default voice
+curl -s -X POST http://127.0.0.1:5000/tts -H "Content-Type: application/json" \
+  -d '{"text":"Guten Tag! Wie geht es dir?"}' --output .refsrc/default.wav
+# voice override
+curl -s -X POST http://127.0.0.1:5000/tts -H "Content-Type: application/json" \
+  -d '{"text":"Guten Tag!","voice":"F1"}' --output .refsrc/f1.wav
+# unknown voice -> expect HTTP 400
+curl -s -o /dev/null -w "unknown-voice HTTP %{http_code}\n" -X POST http://127.0.0.1:5000/tts \
+  -H "Content-Type: application/json" -d '{"text":"Hallo","voice":"Nope"}'
+# CORS header present with an Origin
+curl -s -D - -o /dev/null -H "Origin: chrome-extension://abc" http://127.0.0.1:5000/health | grep -i "access-control-allow-origin"
+```
+Expected: `default.wav` and `f1.wav` are non-trivial WAVs (and audibly different voices); the unknown-voice line prints `HTTP 400`; the CORS line shows `Access-Control-Allow-Origin`. Stop the app afterward.
+
+- [ ] **Step 2: Remove the scratch directory**
 
 ```bash
 cd "C:/LOCAL FILES/Claude Code/DotNet/Converse" && rm -rf .refsrc
 ```
 
-- [ ] **Step 2: Confirm a clean tree and full green suite**
+- [ ] **Step 3: Confirm a clean tree and full green suite**
 
 Run: `git status --short` (expect no `.refsrc` entries) and `dotnet test` (expect all PASS).
 
-- [ ] **Step 3: Push**
+- [ ] **Step 4: Push**
 
 ```bash
 git push
@@ -1068,10 +1409,11 @@ git push
 - Config additions, `CfgScale` removal → Task 6. ✓
 - Voice assets download (supertonic-3) → Task 0. ✓
 - German correctness (umlaut/ß decomposition) → Task 3 tests + Task 10 listen. ✓
-- Error handling → not-ready on missing voice → Task 7. ✓
-- Tests: text processor, voice loader, math, integration → Tasks 3, 4, 5, 9. ✓
-- Config-default-only voice/lang (no per-request override) → Tasks 6/8 (uses `_opts.Language`/default voice). ✓
-- Success criteria (German WAV, `tts:true`) → Task 10. ✓
+- Error handling → not-ready on missing default voice (Task 7/11); `400` on unknown voice / invalid lang → Task 11. ✓
+- Tests: text processor, voice loader, math, integration, overrides, CORS → Tasks 3, 4, 5, 9, 11, 12. ✓
+- Per-request voice/lang overrides on `/tts` (defaults when omitted; conversation path unaffected) → Task 11. ✓
+- CORS for browser/extension access → Task 12. ✓
+- Success criteria (German WAV, overrides honoured, cross-origin reachable, `tts:true`) → Tasks 10, 13. ✓
 
 **Deviations from spec, intentional:**
 - The noisy-latent RNG is not seeded. The smoke test asserts properties (finite, in range, plausible length), not exact samples, so determinism is unnecessary (YAGNI). Noted here so it isn't mistaken for an omission.
@@ -1079,4 +1421,4 @@ git push
 
 **Placeholder scan:** none — every code step contains complete code.
 
-**Type consistency:** `SupertonicTextProcessor(UnicodeIndexer)`, `UnicodeIndexer.MapChar(int)→long`, `VoiceStyle.{Ttl,TtlShape,Dp,DpShape}`, `TtsConfig.{SampleRate,BaseChunkSize,LatentDim,ChunkCompressFactor}`, `SupertonicHelpers.{ComputeLatentLen,LatentLengthFor,Mask,ChunkText}`, and `SupertonicOptions.{Language,DefaultVoice,VoicesDirectory,CfmSteps,Speed}` are used consistently across Tasks 1–9.
+**Type consistency:** `SupertonicTextProcessor(UnicodeIndexer)`, `UnicodeIndexer.MapChar(int)→long`, `VoiceStyle.{Ttl,TtlShape,Dp,DpShape}`, `TtsConfig.{SampleRate,BaseChunkSize,LatentDim,ChunkCompressFactor}`, `SupertonicHelpers.{ComputeLatentLen,LatentLengthFor,Mask,ChunkText}`, and `SupertonicOptions.{Language,DefaultVoice,VoicesDirectory,CfmSteps,Speed}` are used consistently across Tasks 1–13. Note: `SupertonicPipeline.Synthesize` gains its final `(text, voice?, lang?, ct)` signature in Task 11 (Task 8 introduces the 2-arg form first); the `_voice` field from Task 7 becomes the `_voices` dictionary in Task 11. These are intentional incremental refinements — each task leaves the build green.

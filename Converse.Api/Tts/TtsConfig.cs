@@ -8,6 +8,7 @@ public sealed class TtsConfig
     public required int LatentDim { get; init; }
     public required int ChunkCompressFactor { get; init; }
     public required int HopLength { get; init; }
+    public required int BaseChunkSize { get; init; }
     public required float SigMin { get; init; }
     public required string TtsVersion { get; init; }
     public required string Split { get; init; }
@@ -30,6 +31,7 @@ public sealed class TtsConfig
             SigMin = ttl.GetProperty("flow_matching").GetProperty("sig_min").GetSingle(),
             SampleRate = ae.GetProperty("sample_rate").GetInt32(),
             HopLength = ae.GetProperty("encoder").GetProperty("spec_processor").GetProperty("hop_length").GetInt32(),
+            BaseChunkSize = ae.GetProperty("base_chunk_size").GetInt32(),
         };
     }
 }
